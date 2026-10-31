@@ -57,7 +57,7 @@ const W = 64, H = 48, K = 4; // K: amostras de cada lado para confirmar um pico 
 const COLORS = { rear: { bg: '#111', raw: '#777', filt: '#f33', peak: '#fff' },
                  front: { bg: '#fff', raw: '#aaa', filt: '#080', peak: '#000' } };
 
-let stream = null, running = false, mode = 'rear', useRVFC = false, lastVideoTime = -1;
+let stream = null, running = false, mode = 'rear', useRVFC = false, lastVideoTime = -1, frameId = null;
 let wakeLock = null, statusBase = '';
 let buf = [];                       // {t, ts, raw, det, filt, peak, rr} dos últimos 15 s
 let lastPeakT = null, lastRR = null;
@@ -103,6 +103,9 @@ async function start() {
 
 function stop() {
   running = false; rec = null;
+  // cancela o callback pendente; senão ele dispara no próximo start e vira um segundo loop
+  if (frameId !== null) (useRVFC ? video.cancelVideoFrameCallback(frameId) : cancelAnimationFrame(frameId));
+  frameId = null;
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null;
   if (wakeLock) wakeLock.release().catch(() => {});
@@ -114,8 +117,7 @@ function stop() {
 
 function schedule() {
   if (!running) return;
-  if (useRVFC) video.requestVideoFrameCallback(onFrame);
-  else requestAnimationFrame(onFrame);
+  frameId = useRVFC ? video.requestVideoFrameCallback(onFrame) : requestAnimationFrame(onFrame);
 }
 
 function onFrame() {
