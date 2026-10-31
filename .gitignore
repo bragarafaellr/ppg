@@ -1,0 +1,3 @@
+# certificados do mkcert (serve.sh)
+*.pem
+.claude/settings.local.json
