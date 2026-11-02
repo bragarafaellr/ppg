@@ -3,8 +3,10 @@
 Watch app descartável que responde uma pergunta: **o sensor do pulso do 965 entrega intervalos RR reais pelo Connect IQ?**
 Sem RR reais não há biofeedback batida a batida no relógio (ver decisões abaixo).
 
-O app grava **1 min** (aperte START durante a gravação para alternar entre 1 e 2 min): registra `heartBeatIntervals` via `Sensor.registerSensorDataListener` e grava uma atividade
-(para comparar a FC no Garmin Connect). Ao fim, vibra e mostra `FIM`.
+O app registra `heartBeatIntervals` via `Sensor.registerSensorDataListener` e a FC do relógio.
+
+Botões: na tela inicial, **UP/DOWN** escolhe 1 ou 2 min e **START** grava. Gravando, **START** para. No fim (vibra e mostra `FIM`), **START** volta à tela inicial. **BACK** sai.
+O toque na tela não faz nada, para não parar a gravação por acidente.
 
 Tela:
 
@@ -14,7 +16,7 @@ Tela:
 | `FC 52  cb 45` | FC do relógio · quantas vezes o callback do sensor foi chamado |
 | `RR n=40` | quantos RR chegaram |
 | `media` / `dp` | média e desvio padrão dos RR (ms) |
-| última linha | últimos 3 RR |
+| penúltima linha | últimos 3 RR |
 
 ## Compilar
 
@@ -60,4 +62,9 @@ O app recebe os RR em lotes a cada 1 s (o mínimo do `:period`), então o atraso
 - **Durante exercício:** começar pelo watch app e depois validar se faz sentido usar na corrida (talvez só um número fixo).
 - **Fonte de RR:** só o pulso, sem cinta. Se o spike falhar, o relógio fica **só com o pacer**.
 - **Código:** esta subpasta de `bragarafaellr/ppg`.
-- **Resultado do spike:** _pendente (teste no relógio)_.
+- **1º teste no relógio (02/11, `dados/garmin-rrspike-2026-11-02-travou.txt`):** o **relógio inteiro travou** por volta de 20 s (lista de atividades presa; foi preciso segurar LIGHT ~15 s para reiniciar). Não houve `CIQ_LOG` (não foi exceção do app). Até 20 s: FC 72–81 bpm chegando, **nenhum RR**; aos 20,0 s chegou um único RR (621 ms, incoerente com FC 80 ≈ 750 ms) e o log acaba. Suspeita: a gravação de atividade (`ActivityRecording`) junto com o sensor. A 2ª versão não grava atividade.
+- **Resultado do spike:** _pendente (2º teste no relógio)_. Se travar de novo sem `ActivityRecording`, o problema é o próprio `heartBeatIntervals` no pulso, o que já pesa contra o biofeedback no relógio.
+
+## Se o relógio travar
+
+Segure **LIGHT** por 15–30 s até a tela apagar e aperte LIGHT para ligar (não apaga dados). Para remover o app: `Configurações > Atividades e apps`, ou apague `GARMIN/APPS/RRSPIKE.prg` pelo USB.
