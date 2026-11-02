@@ -61,6 +61,7 @@
     <div>Último RR (ms)<b id="rr">--</b></div>
     <div>Qualidade<b id="q">--</b></div>
     <div>FPS<b id="fps">--</b></div>
+    <div>Extrassístoles (1 min)<b id="ect">--</b></div>
   </div>
   <div id="reason"></div>
   <canvas id="chart"></canvas>
@@ -90,6 +91,7 @@ let rrRecent = [];                  // últimos 8 RR dentro de 300–2000 ms, v�
 let lpz = [0, 0, 0, 0];             // estado do passa-baixa
 let amps = [], motionUntil = 0;     // amplitude dos últimos 2 s (~10 s de histórico); fim do bloqueio por movimento
 let beats = [];                     // {t, hr} dos batimentos válidos dos últimos 60 s
+let prevRR = null, prev2RR = null, ectopic = []; // 2 RR anteriores (consecutivos); horários das possíveis extrassístoles
 let pacerT0 = 0, rate = 6;          // rate: respirações/min (0 = sem pacer)
 const INHALE = 0.4;                 // inspiração = 40% do ciclo (4 s de 10 s): expiração mais longa, como no paper
 let rec = null, recStart = 0, recDur = 60000;
@@ -150,7 +152,7 @@ async function start() {
   } catch (e) { torch = 'não (' + e.name + ')'; }
 
   buf = []; lastPeakT = lastRR = null; rrLog = []; rrValid = []; rrRecent = []; lastVideoTime = -1;
-  lpz = [0, 0, 0, 0]; amps = []; motionUntil = 0; beats = []; pacerT0 = performance.now();
+  lpz = [0, 0, 0, 0]; amps = []; motionUntil = 0; beats = []; prevRR = prev2RR = null; ectopic = []; pacerT0 = performance.now();
   useRVFC = 'requestVideoFrameCallback' in video;
   statusBase = `Câmera ${video.videoWidth}x${video.videoHeight} · captura ${useRVFC ? 'rVFC' : 'rAF'} · flash: ${torch}`;
   running = true;
@@ -221,7 +223,7 @@ function process(raw) {
   let mn = Infinity, mx = -Infinity;
   for (let i = buf.length - 1; i >= 0 && buf[i].t >= t - 2000; i--) { mn = Math.min(mn, buf[i].filt); mx = Math.max(mx, buf[i].filt); }
   amps.push(mx - mn); if (amps.length > 300) amps.shift();
-  if (amps.length > 90 && mx - mn > 2.5 * median(amps)) { motionUntil = t + 1000; lastPeakT = null; }
+  if (amps.length > 90 && mx - mn > 2.5 * median(amps)) { motionUntil = t + 1000; lastPeakT = prevRR = prev2RR = null; }
   s.mov = t < motionUntil ? 1 : 0;
   detectPeak(t);
   while (buf[0].t < t - 15000) buf.shift();
@@ -243,13 +245,20 @@ function detectPeak(t) {
   if (p.filt < mn + 0.5 * (mx - mn)) return;
   p.peak = 1;
   if (lastPeakT !== null) {
-    const rr = p.t - lastPeakT;
+    const rr = p.t - lastPeakT, prev = prevRR, ref = prev2RR;
+    prev2RR = prevRR; prevRR = rr;
     let ok = rr >= 300 && rr <= 2000;
     if (ok) {
-      // batimento contado em dobro ou perdido: RR muito longe da mediana recente
-      const m = rrRecent.length >= 4 ? median(rrRecent) : rr;
+      const m = rrRecent.length >= 4 ? median(rrRecent) : null;
       rrRecent.push(rr); if (rrRecent.length > 8) rrRecent.shift();
-      ok = rr >= 0.7 * m && rr <= 1.5 * m;
+      // sem 4 RR de referência (início da captura) ainda não dá para julgar: não aceita nem conta como descarte
+      if (m === null) { lastPeakT = p.t; return; }
+      if (ref && prev < 0.85 * ref && rr > 1.1 * ref && Math.abs(prev + rr - 2 * ref) < 0.2 * ref) {
+        // possível extrassístole: RR curto seguido de pausa compensatória, os dois somando ~2 RR normais anteriores
+        ectopic.push(p.t); ok = false;
+        if (beats.length && beats.at(-1).t === lastPeakT) beats.pop();   // tira a batida prematura da curva e do CSV
+        const q = buf.find(s => s.t === lastPeakT); if (q) q.rr = '';
+      } else ok = rr >= 0.7 * m && rr <= 1.5 * m;   // batimento contado em dobro ou perdido
     }
     rrLog.push(ok); if (rrLog.length > 20) rrLog.shift();
     if (ok) {
@@ -267,12 +276,16 @@ function pacerPhase(t) {
 }
 
 // variação por respiração: FC máx − mín em cada ciclo do pacer (janelas de 10 s sem pacer),
-// média dos últimos 3 ciclos completos com pelo menos 3 batimentos
+// média dos últimos 3 ciclos completos com pelo menos 3 batimentos e sem buraco
+// (movimento ou batida descartada deixa um intervalo > 1,5 RR e corta os extremos do ciclo)
 function rsa(t) {
-  const per = rate ? 60000 / rate : 10000, out = [];
+  if (!rrValid.length) return null;
+  const per = rate ? 60000 / rate : 10000, gap = 1.5 * median(rrValid), out = [];
   for (let end = pacerT0 + Math.floor((t - pacerT0) / per) * per; end - per >= pacerT0 && end > t - 60000 && out.length < 3; end -= per) {
-    const hr = beats.filter(b => b.t >= end - per && b.t < end).map(b => b.hr);
-    if (hr.length >= 3) out.push(Math.max(...hr) - Math.min(...hr));
+    const cyc = beats.filter(b => b.t >= end - per && b.t < end), ts = [end - per, ...cyc.map(b => b.t), end];
+    if (cyc.length < 3 || ts.some((x, i) => i && x - ts[i - 1] > gap)) continue;
+    const hr = cyc.map(b => b.hr);
+    out.push(Math.max(...hr) - Math.min(...hr));
   }
   return out.length ? out.reduce((a, b) => a + b) / out.length : null;
 }
@@ -318,6 +331,8 @@ function show() {
   $('reason').textContent = t < motionUntil ? 'Movimento: deixe o dedo parado' : q.why ? 'Motivo: ' + q.why : '';
   const v = rsa(t), ph = pacerPhase(t);
   $('rsa').textContent = v === null ? '--' : Math.round(v);
+  ectopic = ectopic.filter(x => x > t - 60000);
+  $('ect').textContent = ectopic.length;
   $('pfill').style.width = ph ? 100 * (1 - Math.cos(Math.PI * ph.level)) / 2 + '%' : '0';
   $('plabel').textContent = ph ? (ph.inhale ? 'Inspire' : 'Expire') : 'sem pacer';
   $('status').textContent = statusBase + (rec ? ` · gravando ${Math.ceil((recDur - (t - recStart)) / 1000)} s` : '');
