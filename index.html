@@ -13,7 +13,11 @@
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:10px 0; }
   button, select { font-size:17px; padding:10px 14px; border-radius:8px; }
   video { width:80px; height:60px; background:#000; border-radius:4px; object-fit:cover; }
-  #chart { width:100%; height:180px; display:block; border:1px solid #8884; border-radius:6px; }
+  #chart { width:100%; height:120px; display:block; border:1px solid #8884; border-radius:6px; }
+  #hr { width:100%; height:200px; display:block; border:1px solid #8884; border-radius:6px; margin-top:8px; }
+  #pacer { height:36px; border:1px solid #8884; border-radius:6px; position:relative; overflow:hidden; }
+  #pfill { position:absolute; left:0; top:0; bottom:0; width:0; background:#38f; }
+  #plabel { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:600; }
   .big { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0; }
   .big div { font-size:14px; color:var(--muted); }
   .big b { display:block; font-size:44px; color:var(--fg); font-variant-numeric:tabular-nums; }
@@ -38,14 +42,28 @@
   </div>
   <div id="status">Parado.</div>
   <div id="garmin">Garmin: desconectado</div>
-  <canvas id="chart"></canvas>
+  <div class="row">
+    Respiração
+    <select id="rate">
+      <option value="6.5">6,5/min</option>
+      <option value="6" selected>6/min</option>
+      <option value="5.5">5,5/min</option>
+      <option value="5">5/min</option>
+      <option value="4.5">4,5/min</option>
+      <option value="0">sem pacer</option>
+    </select>
+  </div>
+  <div id="pacer"><div id="pfill"></div><div id="plabel"></div></div>
+  <canvas id="hr"></canvas>
   <div class="big">
     <div>BPM<b id="bpm">--</b></div>
+    <div>Variação/resp (bpm)<b id="rsa">--</b></div>
     <div>Último RR (ms)<b id="rr">--</b></div>
     <div>Qualidade<b id="q">--</b></div>
     <div>FPS<b id="fps">--</b></div>
   </div>
   <div id="reason"></div>
+  <canvas id="chart"></canvas>
   <div id="out" hidden>
     <p><a id="dl">Baixar CSV</a> — se o download não funcionar, copie o texto abaixo.</p>
     <textarea id="csv" readonly></textarea>
@@ -54,9 +72,12 @@
 </main>
 <script>
 const $ = id => document.getElementById(id);
-const video = $('video'), chart = $('chart'), cx = chart.getContext('2d');
+const video = $('video'), chart = $('chart'), cx = chart.getContext('2d'), hrc = $('hr'), hx = hrc.getContext('2d');
 const work = $('work').getContext('2d', { willReadFrequently: true });
-const W = 64, H = 48, K = 4; // K: amostras de cada lado para confirmar um pico (~130 ms de atraso)
+const W = 64, H = 48, K = 6; // K: amostras de cada lado para confirmar um pico (~200 ms de atraso)
+// passa-baixa Butterworth de 2ª ordem, 3 Hz a 30 fps: remove o entalhe dicrótico que virava pico falso
+const LP = (() => { const w = 2 * Math.PI * 3 / 30, c = Math.cos(w), a = Math.sin(w) / Math.SQRT2, a0 = 1 + a;
+                    return [(1 - c) / 2 / a0, (1 - c) / a0, (1 - c) / 2 / a0, -2 * c / a0, (1 - a) / a0]; })();
 const COLORS = { rear: { bg: '#111', raw: '#777', filt: '#f33', peak: '#fff' },
                  front: { bg: '#fff', raw: '#aaa', filt: '#080', peak: '#000' } };
 
@@ -66,6 +87,11 @@ let buf = [];                       // {t, ts, raw, det, filt, peak, rr} dos úl
 let lastPeakT = null, lastRR = null;
 let rrLog = [], rrValid = [];       // rrLog: válido? dos últimos 20 RR; rrValid: últimos 8 RR válidos
 let rrRecent = [];                  // últimos 8 RR dentro de 300–2000 ms, válidos ou não (referência da mediana)
+let lpz = [0, 0, 0, 0];             // estado do passa-baixa
+let amps = [], motionUntil = 0;     // amplitude dos últimos 2 s (~10 s de histórico); fim do bloqueio por movimento
+let beats = [];                     // {t, hr} dos batimentos válidos dos últimos 60 s
+let pacerT0 = 0, rate = 6;          // rate: respirações/min (0 = sem pacer)
+const INHALE = 0.4;                 // inspiração = 40% do ciclo (4 s de 10 s): expiração mais longa, como no paper
 let rec = null, recStart = 0, recDur = 60000;
 let garminBpm = '', garminRR = [];  // último BPM do Garmin; RR recebidos desde o último frame
 
@@ -76,6 +102,7 @@ const startRec = ms => { rec = []; recStart = performance.now(); recDur = ms; $(
 $('rec').onclick = () => startRec(60000);
 $('rec2').onclick = () => startRec(120000);
 $('csv').onfocus = e => e.target.select();
+$('rate').onchange = () => { rate = +$('rate').value; pacerT0 = performance.now(); };
 $('ble').onclick = () => connectGarmin().catch(e => { $('garmin').textContent = 'Garmin: erro — ' + e.message; });
 document.addEventListener('visibilitychange', () => { if (running && document.visibilityState === 'visible') requestWakeLock(); });
 
@@ -123,6 +150,7 @@ async function start() {
   } catch (e) { torch = 'não (' + e.name + ')'; }
 
   buf = []; lastPeakT = lastRR = null; rrLog = []; rrValid = []; rrRecent = []; lastVideoTime = -1;
+  lpz = [0, 0, 0, 0]; amps = []; motionUntil = 0; beats = []; pacerT0 = performance.now();
   useRVFC = 'requestVideoFrameCallback' in video;
   statusBase = `Câmera ${video.videoWidth}x${video.videoHeight} · captura ${useRVFC ? 'rVFC' : 'rAF'} · flash: ${torch}`;
   running = true;
@@ -158,6 +186,7 @@ function onFrame() {
     lastVideoTime = video.currentTime;
     process(readChannel());
     draw();
+    drawHR();
     show();
   }
   schedule();
@@ -172,8 +201,9 @@ function readChannel() {
 }
 
 function process(raw) {
-  const t = performance.now(), s = { t, ts: Date.now(), raw, det: 0, filt: 0, peak: 0, rr: '',
-                                     garmin: garminBpm, grr: garminRR.join(' ') };
+  const t = performance.now(), ph = pacerPhase(t);
+  const s = { t, ts: Date.now(), raw, det: 0, filt: 0, peak: 0, rr: '', mov: 0,
+              pacer: ph ? (ph.inhale ? 1 : 0) : '', garmin: garminBpm, grr: garminRR.join(' ') };
   garminRR = [];
   buf.push(s);
   if (rec) rec.push(s);
@@ -181,9 +211,18 @@ function process(raw) {
   let sum = 0, n = 0;
   for (let i = buf.length - 1; i >= 0 && buf[i].t >= t - 1500; i--) { sum += buf[i].raw; n++; }
   s.det = raw - sum / n;
-  // suaviza com média de 5 amostras; inverte porque o pulso escurece a imagem
-  const last = buf.slice(-5);
-  s.filt = -last.reduce((a, b) => a + b.det, 0) / last.length;
+  // média de 5 amostras: só para o indicador de qualidade, que mede o ruído que ela remove
+  s.sm = buf.slice(-5).reduce((a, b) => a + b.det, 0) / Math.min(5, buf.length);
+  // passa-baixa; inverte porque o pulso escurece a imagem
+  const [b0, b1, b2, a1, a2] = LP, y = b0 * s.det + b1 * lpz[0] + b2 * lpz[1] - a1 * lpz[2] - a2 * lpz[3];
+  lpz = [s.det, lpz[0], y, lpz[2]];
+  s.filt = -y;
+  // movimento do dedo: amplitude dos últimos 2 s muito acima da típica; descarta batimentos por 1 s
+  let mn = Infinity, mx = -Infinity;
+  for (let i = buf.length - 1; i >= 0 && buf[i].t >= t - 2000; i--) { mn = Math.min(mn, buf[i].filt); mx = Math.max(mx, buf[i].filt); }
+  amps.push(mx - mn); if (amps.length > 300) amps.shift();
+  if (amps.length > 90 && mx - mn > 2.5 * median(amps)) { motionUntil = t + 1000; lastPeakT = null; }
+  s.mov = t < motionUntil ? 1 : 0;
   detectPeak(t);
   while (buf[0].t < t - 15000) buf.shift();
   if (rec && t - recStart >= recDur) finishRec();
@@ -194,11 +233,14 @@ function detectPeak(t) {
   if (c < K) return;
   const p = buf[c];
   for (let i = c - K; i <= c + K; i++) if (buf[i].filt > p.filt) return;
-  if (lastPeakT !== null && p.t - lastPeakT < 300) return; // período refratário
-  // limiar adaptativo: 60% da faixa dos últimos 2 s
+  // período refratário: 60% do RR típico (mínimo 300 ms)
+  const refr = rrValid.length >= 4 ? Math.max(300, 0.6 * median(rrValid)) : 300;
+  if (lastPeakT !== null && p.t - lastPeakT < refr) return;
+  if (p.t < motionUntil) return;
+  // limiar adaptativo: 50% da faixa dos últimos 2 s
   let mn = Infinity, mx = -Infinity;
   for (let i = buf.length - 1; i >= 0 && buf[i].t >= t - 2000; i--) { mn = Math.min(mn, buf[i].filt); mx = Math.max(mx, buf[i].filt); }
-  if (p.filt < mn + 0.6 * (mx - mn)) return;
+  if (p.filt < mn + 0.5 * (mx - mn)) return;
   p.peak = 1;
   if (lastPeakT !== null) {
     const rr = p.t - lastPeakT;
@@ -210,9 +252,29 @@ function detectPeak(t) {
       ok = rr >= 0.7 * m && rr <= 1.5 * m;
     }
     rrLog.push(ok); if (rrLog.length > 20) rrLog.shift();
-    if (ok) { p.rr = Math.round(rr); lastRR = rr; rrValid.push(rr); if (rrValid.length > 8) rrValid.shift(); }
+    if (ok) {
+      p.rr = Math.round(rr); lastRR = rr; rrValid.push(rr); if (rrValid.length > 8) rrValid.shift();
+      beats.push({ t: p.t, hr: 60000 / rr }); while (beats[0].t < t - 60000) beats.shift();
+    }
   }
   lastPeakT = p.t;
+}
+
+function pacerPhase(t) {
+  if (!rate) return null;
+  const per = 60000 / rate, x = ((t - pacerT0) % per) / per, inhale = x < INHALE;
+  return { inhale, level: inhale ? x / INHALE : 1 - (x - INHALE) / (1 - INHALE) };
+}
+
+// variação por respiração: FC máx − mín em cada ciclo do pacer (janelas de 10 s sem pacer),
+// média dos últimos 3 ciclos completos com pelo menos 3 batimentos
+function rsa(t) {
+  const per = rate ? 60000 / rate : 10000, out = [];
+  for (let end = pacerT0 + Math.floor((t - pacerT0) / per) * per; end - per >= pacerT0 && end > t - 60000 && out.length < 3; end -= per) {
+    const hr = beats.filter(b => b.t >= end - per && b.t < end).map(b => b.hr);
+    if (hr.length >= 3) out.push(Math.max(...hr) - Math.min(...hr));
+  }
+  return out.length ? out.reduce((a, b) => a + b) / out.length : null;
 }
 
 const clamp = v => Math.max(0, Math.min(1, v));
@@ -230,10 +292,10 @@ function quality(t) {
   if (win.length < 30) return { q: 0, fps: 0, why: 'aguardando sinal' };
   const w2 = win.filter(s => s.t >= t - 2000);
   const fps = (w2.length - 1) * 1000 / (w2[w2.length - 1].t - w2[0].t);
-  // amplitude do filtrado vs ruído residual (o que a suavização removeu);
+  // amplitude do suavizado vs ruído residual (o que a suavização removeu);
   // a média de 5 atrasa 2 amostras, então compara com a amostra centralizada
-  const resid = win.slice(2).map((s, i) => win[i].det + s.filt);
-  const snr = std(win.map(s => s.filt)) / (std(resid) || 1e-9);
+  const resid = win.slice(2).map((s, i) => win[i].det - s.sm);
+  const snr = std(win.map(s => s.sm)) / (std(resid) || 1e-9);
   const bad = rrLog.filter(ok => !ok).length;
   const sS = clamp((snr - 1) / 3);
   const sR = rrLog.length < 3 ? 0 : clamp(1 - bad / rrLog.length / 0.5);
@@ -253,7 +315,11 @@ function show() {
   const q = quality(t);
   $('q').textContent = q.q;
   $('fps').textContent = q.fps ? q.fps.toFixed(1) : '--';
-  $('reason').textContent = q.why ? 'Motivo: ' + q.why : '';
+  $('reason').textContent = t < motionUntil ? 'Movimento: deixe o dedo parado' : q.why ? 'Motivo: ' + q.why : '';
+  const v = rsa(t), ph = pacerPhase(t);
+  $('rsa').textContent = v === null ? '--' : Math.round(v);
+  $('pfill').style.width = ph ? 100 * (1 - Math.cos(Math.PI * ph.level)) / 2 + '%' : '0';
+  $('plabel').textContent = ph ? (ph.inhale ? 'Inspire' : 'Expire') : 'sem pacer';
   $('status').textContent = statusBase + (rec ? ` · gravando ${Math.ceil((recDur - (t - recStart)) / 1000)} s` : '');
 }
 
@@ -282,12 +348,36 @@ function draw() {
   for (const s of win) if (s.peak) { cx.beginPath(); cx.arc(x(s), yf(s), 4 * dpr, 0, 7); cx.fill(); }
 }
 
+// FC batida a batida dos últimos 30 s; faixas azuis = inspiração do pacer
+function drawHR() {
+  const dpr = window.devicePixelRatio || 1, w = Math.round(hrc.clientWidth * dpr), h = Math.round(hrc.clientHeight * dpr);
+  if (hrc.width !== w || hrc.height !== h) { hrc.width = w; hrc.height = h; }
+  const col = COLORS[mode], t0 = performance.now() - 30000, x = tt => (tt - t0) / 30000 * w;
+  hx.fillStyle = col.bg; hx.fillRect(0, 0, w, h);
+  if (rate) {
+    const per = 60000 / rate;
+    hx.fillStyle = 'rgba(51,136,255,0.3)';
+    for (let c = pacerT0 + Math.floor((t0 - pacerT0) / per) * per; c < t0 + 30000; c += per) hx.fillRect(x(c), 0, INHALE * per / 30000 * w, h);
+  }
+  const win = beats.filter(b => b.t >= t0);
+  if (win.length < 2) return;
+  let mn = Math.min(...win.map(b => b.hr)), mx = Math.max(...win.map(b => b.hr));
+  if (mx - mn < 10) { const m = (mx + mn) / 2; mn = m - 5; mx = m + 5; }
+  const y = hr => h - 12 * dpr - (hr - mn) / (mx - mn) * (h - 24 * dpr);
+  hx.strokeStyle = col.filt; hx.lineWidth = 2.5 * dpr; hx.beginPath();
+  win.forEach((b, i) => i ? hx.lineTo(x(b.t), y(b.hr)) : hx.moveTo(x(b.t), y(b.hr)));
+  hx.stroke();
+  hx.fillStyle = col.peak; hx.font = `${12 * dpr}px sans-serif`;
+  hx.fillText(Math.round(mx), 4 * dpr, 14 * dpr);
+  hx.fillText(Math.round(mn), 4 * dpr, h - 4 * dpr);
+}
+
 function finishRec() {
   const rows = rec, t0 = rows[0].t;
   rec = null;
   $('rec').disabled = $('rec2').disabled = $('mode').disabled = false;
-  const csv = 'ts_unix_ms,t_rel_ms,bruto,filtrado,pico,rr_ms,garmin_bpm,garmin_rr_ms\n' +
-    rows.map(s => [s.ts, (s.t - t0).toFixed(1), s.raw.toFixed(3), s.filt.toFixed(4), s.peak, s.rr, s.garmin, s.grr].join(',')).join('\n') + '\n';
+  const csv = 'ts_unix_ms,t_rel_ms,bruto,filtrado,pico,rr_ms,garmin_bpm,garmin_rr_ms,pacer,movimento\n' +
+    rows.map(s => [s.ts, (s.t - t0).toFixed(1), s.raw.toFixed(3), s.filt.toFixed(4), s.peak, s.rr, s.garmin, s.grr, s.pacer, s.mov].join(',')).join('\n') + '\n';
   const a = $('dl');
   if (a.href) URL.revokeObjectURL(a.href);
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
