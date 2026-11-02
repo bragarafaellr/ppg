@@ -3,14 +3,14 @@
 Watch app descartável que responde uma pergunta: **o sensor do pulso do 965 entrega intervalos RR reais pelo Connect IQ?**
 Sem RR reais não há biofeedback batida a batida no relógio (ver decisões abaixo).
 
-O app grava 2 min: registra `heartBeatIntervals` via `Sensor.registerSensorDataListener` e grava uma atividade
+O app grava **1 min** (aperte START durante a gravação para alternar entre 1 e 2 min): registra `heartBeatIntervals` via `Sensor.registerSensorDataListener` e grava uma atividade
 (para comparar a FC no Garmin Connect). Ao fim, vibra e mostra `FIM`.
 
 Tela:
 
 | Linha | Significado |
 | --- | --- |
-| `45 / 120 s` | tempo |
+| `45 / 60 s` | tempo / duração |
 | `FC 52  cb 45` | FC do relógio · quantas vezes o callback do sensor foi chamado |
 | `RR n=40` | quantos RR chegaram |
 | `media` / `dp` | média e desvio padrão dos RR (ms) |
@@ -33,10 +33,11 @@ SDK 9.3.0 instalado pelo SDK Manager; chave de desenvolvedor em `~/.garmin/devel
 
 ## Teste
 
-1. Sentado, relógio firme no pulso, 2 min **respirando a 6/min** (5 s inspira, 5 s expira; pode usar o pacer do app web).
-2. Anote a tela final (foto).
-3. Reconecte por USB e copie `GARMIN/APPS/LOGS/RRSPIKE.TXT` para `C:\ppg-teste\dados\`.
-   Linhas `rr,t_ms,rr_ms` (cada RR, carimbado com o tempo do callback) e `hr,t_ms,bpm` (FC do relógio, 1/s).
+1. Sentado, relógio firme no pulso, **respirando a 6/min** (5 s inspira, 5 s expira).
+2. **Ao mesmo tempo**, grave com a câmera do iPhone no app web (dedo da outra mão). O CSV da câmera tem `ts_unix_ms` e o log do relógio tem a hora de início, então dá para alinhar os batimentos e medir **quanto atraso** o RR do relógio tem.
+3. Anote a tela final (foto).
+4. Reconecte por USB e copie `GARMIN/APPS/LOGS/RRSPIKE.TXT` e o CSV da câmera para `C:\ppg-teste\dados\`.
+   Log: `start,epoch_s` (hora de início, precisão de 1 s), `rr,t_ms,rr_ms` (cada RR, carimbado com o tempo do callback) e `hr,t_ms,bpm` (FC do relógio, 1/s).
 
 ## Como ler o resultado
 
@@ -45,10 +46,16 @@ SDK 9.3.0 instalado pelo SDK Manager; chave de desenvolvedor em `~/.garmin/devel
 | `cb 0` | o callback nem é chamado com o sensor do pulso |
 | `cb` sobe, `RR n=0` | callback chamado, mas sem RR |
 | RR chegam, `dp` baixo (< ~10 ms) ou valores repetidos | RR suavizados/sintéticos, não servem |
-| RR chegam, ~1 por batimento (n ≈ FC × 2), `dp` claramente alto (dezenas de ms) e oscilação a ~10 s no log | **RR reais** → biofeedback no relógio é viável |
+| RR chegam, ~1 por batimento (n ≈ FC × minutos), `dp` claramente alto (dezenas de ms) e a FC sobe e desce uma vez a cada respiração (~10 s a 6/min) | **RR reais** |
+| RR reais e atraso em relação à câmera de até ~1–2 s | **biofeedback no relógio é viável** |
+| RR reais, mas atraso de vários segundos (como os ~5 s do BPM por Bluetooth) | não serve para acompanhar a respiração em tempo real |
+
+O app recebe os RR em lotes a cada 1 s (o mínimo do `:period`), então o atraso mínimo é ~1 s mais o processamento do sensor óptico, que só o teste mostra.
 
 ## Decisões (02/11/2026)
 
+- **Objetivo da tela (produto):** acompanhar a respiração: pacer + gráfico da FC batida a batida subindo na inspiração e descendo na expiração. O spike só valida se o dado existe e chega rápido.
+- **Dado o mais instantâneo possível:** atraso de vários segundos inviabiliza o exercício de respiração.
 - **Tipo de app:** watch app. A doc oficial de `registerSensorDataListener` diz que ele "will cause an app crash if called from a data field app", então RR só existe em watch app.
 - **Durante exercício:** começar pelo watch app e depois validar se faz sentido usar na corrida (talvez só um número fixo).
 - **Fonte de RR:** só o pulso, sem cinta. Se o spike falhar, o relógio fica **só com o pacer**.

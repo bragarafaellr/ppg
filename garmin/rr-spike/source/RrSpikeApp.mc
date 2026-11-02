@@ -1,6 +1,6 @@
 // Spike: o sensor do pulso do FR965 entrega RR reais por heartBeatIntervals?
-// Grava 2 min de RR e FC; mostra contagem, média, desvio padrão e os últimos 3 RR.
-// Log (se existir GARMIN/APPS/LOGS/RRSPIKE.TXT): linhas "rr,t_ms,valor_ms" e "hr,t_ms,bpm".
+// Grava 1 min (START alterna para 2 min) de RR e FC; mostra contagem, média, desvio padrão e os últimos 3 RR.
+// Log (se existir GARMIN/APPS/LOGS/RRSPIKE.TXT): "start,epoch_s" e linhas "rr,t_ms,valor_ms" e "hr,t_ms,bpm".
 import Toybox.Activity;
 import Toybox.ActivityRecording;
 import Toybox.Application;
@@ -10,10 +10,9 @@ import Toybox.Lang;
 import Toybox.Math;
 import Toybox.Sensor;
 import Toybox.System;
+import Toybox.Time;
 import Toybox.Timer;
 import Toybox.WatchUi;
-
-const DURATION_MS = 120000;
 
 class RrSpikeApp extends Application.AppBase {
     var view;
@@ -24,7 +23,7 @@ class RrSpikeApp extends Application.AppBase {
 
     function getInitialView() {
         view = new RrSpikeView();
-        return [view];
+        return [view, new RrSpikeDelegate(view)];
     }
 
     function onStop(state) {
@@ -41,12 +40,15 @@ class RrSpikeView extends WatchUi.View {
     var t0;
     var elapsed = 0;
     var done = false;
+    var durationMs = 60000;
     var session;
     var timer;
 
     function initialize() {
         View.initialize();
         t0 = System.getTimer();
+        // Horário absoluto (precisão de 1 s) para alinhar com o CSV da câmera e medir o atraso.
+        System.println("start," + Time.now().value());
         Sensor.registerSensorDataListener(method(:onData), {
             :period => 1,
             :heartBeatIntervals => {:enabled => true}
@@ -79,10 +81,17 @@ class RrSpikeView extends WatchUi.View {
             hrNow = info.currentHeartRate;
             System.println("hr," + elapsed + "," + hrNow);
         }
-        if (elapsed >= DURATION_MS) {
+        if (elapsed >= durationMs) {
             finish();
         }
         WatchUi.requestUpdate();
+    }
+
+    function toggleDuration() as Void {
+        if (!done) {
+            durationMs = durationMs == 60000 ? 120000 : 60000;
+            WatchUi.requestUpdate();
+        }
     }
 
     function finish() as Void {
@@ -120,7 +129,7 @@ class RrSpikeView extends WatchUi.View {
             last += rr[i] + " ";
         }
         var lines = [
-            (done ? "FIM  " : "") + elapsed / 1000 + " / 120 s",
+            (done ? "FIM  " : "") + elapsed / 1000 + " / " + durationMs / 1000 + " s",
             "FC " + hrNow + "   cb " + callbacks,
             "RR n=" + n,
             "media " + mean.format("%.0f") + " ms",
@@ -135,5 +144,19 @@ class RrSpikeView extends WatchUi.View {
         for (var i = 0; i < lines.size(); i++) {
             dc.drawText(dc.getWidth() / 2, y + i * fh, Graphics.FONT_SMALL, lines[i], Graphics.TEXT_JUSTIFY_CENTER);
         }
+    }
+}
+
+class RrSpikeDelegate extends WatchUi.BehaviorDelegate {
+    var view;
+
+    function initialize(v) {
+        BehaviorDelegate.initialize();
+        view = v;
+    }
+
+    function onSelect() {
+        view.toggleDuration();
+        return true;
     }
 }
