@@ -1,6 +1,8 @@
 # ppg
 
-Protótipo para testar leitura de batimentos (PPG) pela câmera do iPhone, sem flash. Uma página só (`index.html`), sem build, sem backend.
+Protótipo para testar leitura de batimentos (PPG) pela câmera do iPhone. Na traseira, o flash é ligado quando o aparelho permite; na frontal, a tela branca ilumina o dedo. Uma página só (`index.html`), sem build, sem backend.
+
+Para receber ao vivo a frequência de um relógio Garmin (Configurações › Sensores e acessórios › FC no pulso › Transmitir FC), abra a página no navegador **Bluefy**, que tem Bluetooth, e toque em "Conectar Garmin". No Safari a câmera funciona, mas o Bluetooth não.
 
 ## Servir
 
@@ -30,12 +32,24 @@ Para o iPhone confiar no certificado:
 
 ## Protocolo de teste
 
-Antes: desative o Modo Baixa Energia e não troque de aba durante a gravação. Inicie uma atividade no Garmin em paralelo para comparar.
+Antes: desative o Modo Baixa Energia e não troque de aba durante a gravação. Inicie uma atividade Cardio no Garmin e conecte-o na página.
 
-Faça 3 gravações de 60 s (botão "Gravar 60 s"), dedo cobrindo a lente sem apertar:
+Faça 4 gravações de 60 s (botão "Gravar 60 s"), dedo cobrindo a lente sem apertar:
 
-1. **Traseira, perto da janela** (luz natural forte).
-2. **Traseira, ambiente normal** (luz interna).
-3. **Frontal, tela branca** (modo "Frontal": a tela fica branca para iluminar o dedo).
+1. **Traseira**, em repouso.
+2. **Frontal**, em repouso.
+3. **Traseira**, logo após 1 min de esforço (escada ou agachamentos).
+4. **Frontal**, logo após repetir o esforço.
 
-Ao fim de cada gravação, baixe o CSV ou copie o texto da caixa. Colunas: `ts_unix_ms, t_rel_ms, bruto, filtrado, pico, rr_ms` (~1800 linhas a 30 fps; `rr_ms` preenchido nas linhas de pico com RR válido). Use `ts_unix_ms` para alinhar com o Garmin.
+Ao fim de cada gravação, baixe o CSV ou copie o texto da caixa. Colunas:
+
+| Coluna | Conteúdo |
+| --- | --- |
+| `ts_unix_ms` | Horário UTC do iPhone, para alinhar com outros arquivos |
+| `t_rel_ms` | Tempo desde o início da gravação |
+| `bruto`, `filtrado` | Média do canal de cor e sinal filtrado |
+| `pico`, `rr_ms` | 1 na linha de cada batimento; RR válido nessa linha |
+| `garmin_bpm` | Último BPM recebido do relógio (vazio sem conexão) |
+| `garmin_rr_ms` | RR enviado pelo relógio, se ele enviar |
+
+São ~1800 linhas a 30 fps. RR fora de 300–2000 ms, ou longe demais da mediana recente (abaixo de 70% ou acima de 150%), fica em branco.

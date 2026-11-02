@@ -17,7 +17,7 @@
   .big { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0; }
   .big div { font-size:14px; color:var(--muted); }
   .big b { display:block; font-size:44px; color:var(--fg); font-variant-numeric:tabular-nums; }
-  #status, #reason { font-size:14px; color:var(--muted); min-height:1.2em; margin:6px 0; }
+  #status, #reason, #garmin { font-size:14px; color:var(--muted); min-height:1.2em; margin:6px 0; }
   a { color:inherit; }
   textarea { width:100%; height:140px; font-size:11px; box-sizing:border-box; }
 </style>
@@ -32,9 +32,11 @@
     </select>
     <button id="go">Iniciar</button>
     <button id="rec" disabled>Gravar 60 s</button>
+    <button id="ble">Conectar Garmin</button>
     <video id="video" playsinline muted autoplay></video>
   </div>
   <div id="status">Parado.</div>
+  <div id="garmin">Garmin: desconectado</div>
   <canvas id="chart"></canvas>
   <div class="big">
     <div>BPM<b id="bpm">--</b></div>
@@ -62,16 +64,41 @@ let wakeLock = null, statusBase = '';
 let buf = [];                       // {t, ts, raw, det, filt, peak, rr} dos últimos 15 s
 let lastPeakT = null, lastRR = null;
 let rrLog = [], rrValid = [];       // rrLog: válido? dos últimos 20 RR; rrValid: últimos 8 RR válidos
+let rrRecent = [];                  // últimos 8 RR dentro de 300–2000 ms, válidos ou não (referência da mediana)
 let rec = null, recStart = 0;
+let garminBpm = '', garminRR = [];  // último BPM do Garmin; RR recebidos desde o último frame
 
 $('go').onclick = () => running ? stop() : start().catch(e => { stop(); $('status').textContent = 'Erro: ' + e.name + ' — ' + e.message; });
 $('mode').onchange = () => { if (running) start().catch(e => { stop(); $('status').textContent = 'Erro: ' + e.name; }); };
 $('rec').onclick = () => { rec = []; recStart = performance.now(); $('rec').disabled = $('mode').disabled = true; $('out').hidden = true; };
 $('csv').onfocus = e => e.target.select();
+$('ble').onclick = () => connectGarmin().catch(e => { $('garmin').textContent = 'Garmin: erro — ' + e.message; });
 document.addEventListener('visibilitychange', () => { if (running && document.visibilityState === 'visible') requestWakeLock(); });
 
 async function requestWakeLock() {
   try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { /* não suportado */ }
+}
+
+// Frequência cardíaca do relógio pelo serviço padrão Bluetooth (Garmin: "Transmitir FC")
+async function connectGarmin() {
+  if (!navigator.bluetooth) { $('garmin').textContent = 'Garmin: sem Bluetooth neste navegador (use o Bluefy)'; return; }
+  const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: ['heart_rate'] }] });
+  dev.addEventListener('gattserverdisconnected', () => { garminBpm = ''; $('garmin').textContent = 'Garmin: desconectado'; });
+  const server = await dev.gatt.connect();
+  const ch = await (await server.getPrimaryService('heart_rate')).getCharacteristic('heart_rate_measurement');
+  ch.addEventListener('characteristicvaluechanged', e => onHeartRate(e.target.value));
+  await ch.startNotifications();
+  $('garmin').textContent = 'Garmin: conectado (' + (dev.name || 'sem nome') + ')';
+}
+
+// Heart Rate Measurement: flags, BPM (uint8 ou uint16), [energia uint16], [RR uint16 em 1/1024 s]
+function onHeartRate(v) {
+  const flags = v.getUint8(0), wide = flags & 1;
+  garminBpm = wide ? v.getUint16(1, true) : v.getUint8(1);
+  let i = wide ? 3 : 2;
+  if (flags & 8) i += 2;
+  if (flags & 16) for (; i + 1 < v.byteLength; i += 2) garminRR.push(Math.round(v.getUint16(i, true) * 1000 / 1024));
+  $('garmin').textContent = `Garmin: ${garminBpm} bpm · ${flags & 16 ? 'com RR' : 'sem RR'}`;
 }
 
 async function start() {
@@ -91,7 +118,7 @@ async function start() {
     torch = track.getSettings().torch ? 'LIGADO' : 'não (ignorado)';
   } catch (e) { torch = 'não (' + e.name + ')'; }
 
-  buf = []; lastPeakT = lastRR = null; rrLog = []; rrValid = []; lastVideoTime = -1;
+  buf = []; lastPeakT = lastRR = null; rrLog = []; rrValid = []; rrRecent = []; lastVideoTime = -1;
   useRVFC = 'requestVideoFrameCallback' in video;
   statusBase = `Câmera ${video.videoWidth}x${video.videoHeight} · captura ${useRVFC ? 'rVFC' : 'rAF'} · flash: ${torch}`;
   running = true;
@@ -141,7 +168,9 @@ function readChannel() {
 }
 
 function process(raw) {
-  const t = performance.now(), s = { t, ts: Date.now(), raw, det: 0, filt: 0, peak: 0, rr: '' };
+  const t = performance.now(), s = { t, ts: Date.now(), raw, det: 0, filt: 0, peak: 0, rr: '',
+                                     garmin: garminBpm, grr: garminRR.join(' ') };
+  garminRR = [];
   buf.push(s);
   if (rec) rec.push(s);
   // remove tendência: subtrai média móvel de 1,5 s
@@ -168,7 +197,14 @@ function detectPeak(t) {
   if (p.filt < mn + 0.6 * (mx - mn)) return;
   p.peak = 1;
   if (lastPeakT !== null) {
-    const rr = p.t - lastPeakT, ok = rr >= 300 && rr <= 2000;
+    const rr = p.t - lastPeakT;
+    let ok = rr >= 300 && rr <= 2000;
+    if (ok) {
+      // batimento contado em dobro ou perdido: RR muito longe da mediana recente
+      const m = rrRecent.length >= 4 ? median(rrRecent) : rr;
+      rrRecent.push(rr); if (rrRecent.length > 8) rrRecent.shift();
+      ok = rr >= 0.7 * m && rr <= 1.5 * m;
+    }
     rrLog.push(ok); if (rrLog.length > 20) rrLog.shift();
     if (ok) { p.rr = Math.round(rr); lastRR = rr; rrValid.push(rr); if (rrValid.length > 8) rrValid.shift(); }
   }
@@ -246,8 +282,8 @@ function finishRec() {
   const rows = rec, t0 = rows[0].t;
   rec = null;
   $('rec').disabled = $('mode').disabled = false;
-  const csv = 'ts_unix_ms,t_rel_ms,bruto,filtrado,pico,rr_ms\n' +
-    rows.map(s => [s.ts, (s.t - t0).toFixed(1), s.raw.toFixed(3), s.filt.toFixed(4), s.peak, s.rr].join(',')).join('\n') + '\n';
+  const csv = 'ts_unix_ms,t_rel_ms,bruto,filtrado,pico,rr_ms,garmin_bpm,garmin_rr_ms\n' +
+    rows.map(s => [s.ts, (s.t - t0).toFixed(1), s.raw.toFixed(3), s.filt.toFixed(4), s.peak, s.rr, s.garmin, s.grr].join(',')).join('\n') + '\n';
   const a = $('dl');
   if (a.href) URL.revokeObjectURL(a.href);
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
