@@ -34,12 +34,14 @@ Para o iPhone confiar no certificado:
 
 Antes: desative o Modo Baixa Energia e não troque de aba durante a gravação. Inicie uma atividade Cardio no Garmin e conecte-o na página.
 
-Faça 4 gravações de 60 s (botão "Gravar 60 s"), dedo cobrindo a lente sem apertar:
+Faça 4 gravações, dedo cobrindo a lente sem apertar:
 
-1. **Traseira**, em repouso.
-2. **Frontal**, em repouso.
-3. **Traseira**, logo após 1 min de esforço (escada ou agachamentos).
-4. **Frontal**, logo após repetir o esforço.
+1. **A — Traseira**, respiração normal, "Gravar 60 s".
+2. **B — Frontal**, respiração normal, "Gravar 60 s".
+3. **C — Traseira**, respirando a 6/min (inspira 4 s, expira 6 s), "Gravar 2 min".
+4. **D — Frontal**, respirando a 6/min, "Gravar 2 min".
+
+C e D duram 2 min para ter ~12 respirações, como pede o protocolo de Lehrer et al. (2000) para analisar cada ritmo.
 
 Ao fim de cada gravação, baixe o CSV ou copie o texto da caixa. Colunas:
 
@@ -52,4 +54,4 @@ Ao fim de cada gravação, baixe o CSV ou copie o texto da caixa. Colunas:
 | `garmin_bpm` | Último BPM recebido do relógio (vazio sem conexão) |
 | `garmin_rr_ms` | RR enviado pelo relógio, se ele enviar |
 
-São ~1800 linhas a 30 fps. RR fora de 300–2000 ms, ou longe demais da mediana recente (abaixo de 70% ou acima de 150%), fica em branco.
+São ~1800 linhas por minuto a 30 fps. RR fora de 300–2000 ms, ou longe demais da mediana recente (abaixo de 70% ou acima de 150%), fica em branco.

@@ -32,6 +32,7 @@
     </select>
     <button id="go">Iniciar</button>
     <button id="rec" disabled>Gravar 60 s</button>
+    <button id="rec2" disabled>Gravar 2 min</button>
     <button id="ble">Conectar Garmin</button>
     <video id="video" playsinline muted autoplay></video>
   </div>
@@ -65,12 +66,15 @@ let buf = [];                       // {t, ts, raw, det, filt, peak, rr} dos úl
 let lastPeakT = null, lastRR = null;
 let rrLog = [], rrValid = [];       // rrLog: válido? dos últimos 20 RR; rrValid: últimos 8 RR válidos
 let rrRecent = [];                  // últimos 8 RR dentro de 300–2000 ms, válidos ou não (referência da mediana)
-let rec = null, recStart = 0;
+let rec = null, recStart = 0, recDur = 60000;
 let garminBpm = '', garminRR = [];  // último BPM do Garmin; RR recebidos desde o último frame
 
 $('go').onclick = () => running ? stop() : start().catch(e => { stop(); $('status').textContent = 'Erro: ' + e.name + ' — ' + e.message; });
 $('mode').onchange = () => { if (running) start().catch(e => { stop(); $('status').textContent = 'Erro: ' + e.name; }); };
-$('rec').onclick = () => { rec = []; recStart = performance.now(); $('rec').disabled = $('mode').disabled = true; $('out').hidden = true; };
+// 2 min: ~12 respirações a 6/min (o paper pede pelo menos 10 por ritmo)
+const startRec = ms => { rec = []; recStart = performance.now(); recDur = ms; $('rec').disabled = $('rec2').disabled = $('mode').disabled = true; $('out').hidden = true; };
+$('rec').onclick = () => startRec(60000);
+$('rec2').onclick = () => startRec(120000);
 $('csv').onfocus = e => e.target.select();
 $('ble').onclick = () => connectGarmin().catch(e => { $('garmin').textContent = 'Garmin: erro — ' + e.message; });
 document.addEventListener('visibilitychange', () => { if (running && document.visibilityState === 'visible') requestWakeLock(); });
@@ -123,7 +127,7 @@ async function start() {
   statusBase = `Câmera ${video.videoWidth}x${video.videoHeight} · captura ${useRVFC ? 'rVFC' : 'rAF'} · flash: ${torch}`;
   running = true;
   $('go').textContent = 'Parar';
-  $('rec').disabled = false;
+  $('rec').disabled = $('rec2').disabled = false;
   requestWakeLock();
   schedule();
 }
@@ -138,7 +142,7 @@ function stop() {
   if (wakeLock) wakeLock.release().catch(() => {});
   wakeLock = null;
   $('go').textContent = 'Iniciar';
-  $('rec').disabled = true; $('mode').disabled = false;
+  $('rec').disabled = $('rec2').disabled = true; $('mode').disabled = false;
   $('status').textContent = 'Parado.';
 }
 
@@ -182,7 +186,7 @@ function process(raw) {
   s.filt = -last.reduce((a, b) => a + b.det, 0) / last.length;
   detectPeak(t);
   while (buf[0].t < t - 15000) buf.shift();
-  if (rec && t - recStart >= 60000) finishRec();
+  if (rec && t - recStart >= recDur) finishRec();
 }
 
 function detectPeak(t) {
@@ -250,7 +254,7 @@ function show() {
   $('q').textContent = q.q;
   $('fps').textContent = q.fps ? q.fps.toFixed(1) : '--';
   $('reason').textContent = q.why ? 'Motivo: ' + q.why : '';
-  $('status').textContent = statusBase + (rec ? ` · gravando ${Math.ceil((60000 - (t - recStart)) / 1000)} s` : '');
+  $('status').textContent = statusBase + (rec ? ` · gravando ${Math.ceil((recDur - (t - recStart)) / 1000)} s` : '');
 }
 
 function draw() {
@@ -281,7 +285,7 @@ function draw() {
 function finishRec() {
   const rows = rec, t0 = rows[0].t;
   rec = null;
-  $('rec').disabled = $('mode').disabled = false;
+  $('rec').disabled = $('rec2').disabled = $('mode').disabled = false;
   const csv = 'ts_unix_ms,t_rel_ms,bruto,filtrado,pico,rr_ms,garmin_bpm,garmin_rr_ms\n' +
     rows.map(s => [s.ts, (s.t - t0).toFixed(1), s.raw.toFixed(3), s.filt.toFixed(4), s.peak, s.rr, s.garmin, s.grr].join(',')).join('\n') + '\n';
   const a = $('dl');
