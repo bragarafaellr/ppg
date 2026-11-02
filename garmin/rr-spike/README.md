@@ -63,7 +63,8 @@ O app recebe os RR em lotes a cada 1 s (o mínimo do `:period`), então o atraso
 - **Fonte de RR:** só o pulso, sem cinta. Se o spike falhar, o relógio fica **só com o pacer**.
 - **Código:** esta subpasta de `bragarafaellr/ppg`.
 - **1º teste no relógio (02/11, `dados/garmin-rrspike-2026-11-02-travou.txt`):** o **relógio inteiro travou** por volta de 20 s (lista de atividades presa; foi preciso segurar LIGHT ~15 s para reiniciar). Não houve `CIQ_LOG` (não foi exceção do app). Até 20 s: FC 72–81 bpm chegando, **nenhum RR**; aos 20,0 s chegou um único RR (621 ms, incoerente com FC 80 ≈ 750 ms) e o log acaba. Suspeita: a gravação de atividade (`ActivityRecording`) junto com o sensor. A 2ª versão não grava atividade.
-- **Resultado do spike:** _pendente (2º teste no relógio)_. Se travar de novo sem `ActivityRecording`, o problema é o próprio `heartBeatIntervals` no pulso, o que já pesa contra o biofeedback no relógio.
+- **2º teste (02/11, sem `ActivityRecording`, 60 s, sentado):** não travou. `cb 59` (callback chamado todo segundo), FC 64, **`RR n=0`**: o sensor do pulso **não entrega nenhum RR** ao app. Câmera junto (`dados/ppg_rear_2026-11-02_junto-rrspike.csv`): FC média 64,7, igual ao relógio.
+- **Decisão:** o FR965 **não serve para biofeedback batida a batida pelo pulso**. Pela escolha "só pulso, sem cinta", o relógio fica **só com o pacer** (respiração guiada por vibração/visual, sem dado de FC em tempo real). O biofeedback com RR segue no app web pela câmera.
 
 ## Se o relógio travar
 
