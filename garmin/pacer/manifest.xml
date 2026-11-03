@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <iq:manifest version="3" xmlns:iq="http://www.garmin.com/xml/connectiq">
-    <iq:application id="f25b5d69f5774e89815c75357eb97c66" type="watch-app" name="@Strings.AppName" entry="PacerApp" launcherIcon="@Drawables.LauncherIcon" minApiLevel="3.0.0">
+    <iq:application id="3563767b965143499d29c80ff45fc54e" type="datafield" name="@Strings.AppName" entry="PacerApp" launcherIcon="@Drawables.LauncherIcon" minApiLevel="3.0.0">
         <iq:products>
             <iq:product id="fr965"/>
         </iq:products>

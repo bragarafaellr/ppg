@@ -1,19 +1,16 @@
-// Pacer de respiração (só visual): o círculo cresce na inspiração e encolhe na expiração.
-// Tela inicial: UP/DOWN muda o ritmo, segurar UP muda a proporção inspira/expira, START começa.
-// Na sessão: START para. No fim: START volta ao início. BACK sai.
+// Pacer de respiração como data field (só visual), para usar dentro da corrida:
+// o círculo cresce na inspiração e encolhe na expiração, com os segundos que faltam na fase.
+// Anda com o cronômetro da atividade (começa e pausa junto). Data field redesenha 1 vez por segundo.
+// Ritmo e proporção são fixos: para mudar, altere as constantes e recompile.
+import Toybox.Activity;
 import Toybox.Application;
 import Toybox.Graphics;
 import Toybox.Lang;
 import Toybox.Math;
-import Toybox.System;
-import Toybox.Timer;
 import Toybox.WatchUi;
 
-const RATES = [65, 60, 55, 50, 45];          // respirações/min × 10 (protocolo de Lehrer: 6,5 a 4,5)
-const RATIOS = [0.5, 0.4, 0.33];             // fração do ciclo inspirando
-const RATIO_NAMES = ["50/50", "40/60", "33/67"];
-
-enum { IDLE, RUN, DONE }
+const RATE_X10 = 60;   // respirações/min × 10 (6,0/min)
+const INHALE = 0.4;    // fração do ciclo inspirando (40/60)
 
 class PacerApp extends Application.AppBase {
     function initialize() {
@@ -21,133 +18,58 @@ class PacerApp extends Application.AppBase {
     }
 
     function getInitialView() {
-        var view = new PacerView();
-        return [view, new PacerDelegate(view)];
+        return [new PacerField()];
     }
 }
 
-class PacerView extends WatchUi.View {
-    var state = IDLE;
-    var rateIdx = 1;
-    var ratioIdx = 1;
-    var t0 = 0;
-    var elapsed = 0;
-    var timer;
+class PacerField extends WatchUi.DataField {
+    var timerMs = 0;
 
     function initialize() {
-        View.initialize();
-        timer = new Timer.Timer();
+        DataField.initialize();
     }
 
-    function onStartKey() as Void {
-        if (state == IDLE) {
-            t0 = System.getTimer();
-            elapsed = 0;
-            state = RUN;
-            timer.start(method(:onTick), 100, true);
-        } else if (state == RUN) {
-            timer.stop();
-            state = DONE;
-        } else {
-            state = IDLE;
-        }
-        WatchUi.requestUpdate();
-    }
-
-    function changeRate(step) as Void {
-        var i = rateIdx + step;
-        if (state == IDLE && i >= 0 && i < RATES.size()) {
-            rateIdx = i;
-            WatchUi.requestUpdate();
-        }
-    }
-
-    function changeRatio() as Void {
-        if (state == IDLE) {
-            ratioIdx = (ratioIdx + 1) % RATIOS.size();
-            WatchUi.requestUpdate();
-        }
-    }
-
-    function onTick() as Void {
-        elapsed = System.getTimer() - t0;
-        WatchUi.requestUpdate();
-    }
-
-    function rateText() {
-        return RATES[rateIdx] / 10 + "," + RATES[rateIdx] % 10 + "/min";
-    }
-
-    function clock() {
-        var s = elapsed / 1000;
-        return s / 60 + ":" + (s % 60).format("%02d");
+    function compute(info as Activity.Info) as Void {
+        timerMs = info.timerTime != null ? info.timerTime : 0;
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
         var w = dc.getWidth();
         var h = dc.getHeight();
-        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
+        var bg = getBackgroundColor();
+        var fg = bg == Graphics.COLOR_BLACK ? Graphics.COLOR_WHITE : Graphics.COLOR_BLACK;
+        var big = w > 300 && h > 300;   // campo único (tela cheia)
+        var font = big ? Graphics.FONT_MEDIUM : h > 100 ? Graphics.FONT_SMALL : Graphics.FONT_TINY;
+        var label = RATE_X10 / 10 + "," + RATE_X10 % 10 + "/min  " + (INHALE * 100).toNumber() + "/" + (100 - INHALE * 100).toNumber();
+        dc.setColor(fg, bg);
         dc.clear();
 
-        if (state != RUN) {
-            var lines = state == IDLE
-                ? ["Pacer", rateText(), RATIO_NAMES[ratioIdx] + " inspira/expira", "UP/DOWN: ritmo", "segure UP: proporcao", "START: iniciar"]
-                : ["FIM", clock(), rateText() + "  " + RATIO_NAMES[ratioIdx], "START: nova"];
-            var fh = dc.getFontHeight(Graphics.FONT_TINY);
-            var y = (h - fh * lines.size()) / 2;
-            for (var i = 0; i < lines.size(); i++) {
-                dc.drawText(w / 2, y + i * fh, Graphics.FONT_TINY, lines[i], Graphics.TEXT_JUSTIFY_CENTER);
+        if (timerMs == 0) {
+            dc.drawText(w / 2, h / 2, font, "Pacer", Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+            if (big) {
+                dc.drawText(w / 2, h * 0.6, Graphics.FONT_TINY, label, Graphics.TEXT_JUSTIFY_CENTER);
             }
             return;
         }
 
-        var per = 600000 / RATES[rateIdx];   // ms por respiração
-        var ratio = RATIOS[ratioIdx];
-        var x = (elapsed % per).toFloat() / per;
-        var inhale = x < ratio;
-        var level = inhale ? x / ratio : 1 - (x - ratio) / (1 - ratio);
+        var per = 600000 / RATE_X10;   // ms por respiração
+        var x = (timerMs % per).toFloat() / per;
+        var inhale = x < INHALE;
+        var level = inhale ? x / INHALE : 1 - (x - INHALE) / (1 - INHALE);
         var ease = (1 - Math.cos(Math.PI * level)) / 2;
-        var rMin = w * 0.12;
-        var rMax = w * 0.36;
-        var left = Math.ceil((inhale ? ratio - x : 1 - x) * per / 1000).toNumber();
+        var rMax = (w < h ? w : h) * (big ? 0.36 : 0.45);
+        var rMin = rMax * 0.33;
+        var left = Math.ceil((inhale ? INHALE - x : 1 - x) * per / 1000).toNumber();
 
         dc.setColor(Graphics.COLOR_DK_GRAY, Graphics.COLOR_TRANSPARENT);
         dc.drawCircle(w / 2, h / 2, rMax);
         dc.setColor(inhale ? 0x3388FF : 0x22BBAA, Graphics.COLOR_TRANSPARENT);
         dc.fillCircle(w / 2, h / 2, rMin + (rMax - rMin) * ease);
-        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(w / 2, h / 2, Graphics.FONT_MEDIUM, (inhale ? "Inspire " : "Expire ") + left,
+        dc.setColor(fg, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(w / 2, h / 2, font, (inhale ? "Inspire " : "Expire ") + left,
                     Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-        dc.drawText(w / 2, h * 0.06, Graphics.FONT_TINY, clock(), Graphics.TEXT_JUSTIFY_CENTER);
-        dc.drawText(w / 2, h * 0.84, Graphics.FONT_TINY, rateText() + "  " + RATIO_NAMES[ratioIdx], Graphics.TEXT_JUSTIFY_CENTER);
-    }
-}
-
-// Só botões físicos (o toque na tela não para a sessão por acidente).
-class PacerDelegate extends WatchUi.BehaviorDelegate {
-    var view;
-
-    function initialize(v) {
-        BehaviorDelegate.initialize();
-        view = v;
-    }
-
-    function onKey(evt) {
-        var key = evt.getKey();
-        if (key == WatchUi.KEY_ENTER) {
-            view.onStartKey();
-            return true;
+        if (big) {
+            dc.drawText(w / 2, h * 0.84, Graphics.FONT_TINY, label, Graphics.TEXT_JUSTIFY_CENTER);
         }
-        if (key == WatchUi.KEY_UP || key == WatchUi.KEY_DOWN) {
-            view.changeRate(key == WatchUi.KEY_UP ? -1 : 1);
-            return true;
-        }
-        return false;
-    }
-
-    // segurar UP
-    function onMenu() {
-        view.changeRatio();
-        return true;
     }
 }
